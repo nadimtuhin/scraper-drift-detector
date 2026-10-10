@@ -1,0 +1,23 @@
+{
+  "name": "Product Search Catalog",
+  "version": "1.0.0",
+  "items": {
+    "container": "article.product-card",
+    "minCount": 3,
+    "fields": {
+      "title": {
+        "selector": "h2.card-title",
+        "required": true
+      },
+      "price": {
+        "selector": "span.card-price",
+        "required": true
+      },
+      "link": {
+        "selector": "a.card-link",
+        "attribute": "href",
+        "required": true
+      }
+    }
+  }
+}

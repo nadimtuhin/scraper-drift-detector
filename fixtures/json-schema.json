@@ -1,0 +1,10 @@
+{
+  "name": "API Catalog Payload",
+  "json": {
+    "requiredKeys": ["status", "data.total", "data.items"],
+    "minItems": {
+      "path": "data.items",
+      "minCount": 2
+    }
+  }
+}

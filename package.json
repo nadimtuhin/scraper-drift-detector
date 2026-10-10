@@ -1,0 +1,36 @@
+{
+  "name": "scraper-drift-detector",
+  "version": "0.1.0",
+  "description": "Fast DOM and schema drift detector for web scraping targets, preventing silent empty-scrape failures",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "type": "module",
+  "bin": {
+    "scraper-drift-detector": "./src/cli.ts",
+    "drift-detector": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "start": "bun run src/cli.ts"
+  },
+  "keywords": [
+    "scraper",
+    "web-scraping",
+    "drift-detection",
+    "cheerio",
+    "schema-validation",
+    "dom-testing",
+    "data-quality",
+    "cli"
+  ],
+  "author": "Nadim Tuhin",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

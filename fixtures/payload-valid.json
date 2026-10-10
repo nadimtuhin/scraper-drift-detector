@@ -1,0 +1,11 @@
+{
+  "status": "success",
+  "data": {
+    "total": 3,
+    "items": [
+      { "id": 1, "name": "Item A" },
+      { "id": 2, "name": "Item B" },
+      { "id": 3, "name": "Item C" }
+    ]
+  }
+}
