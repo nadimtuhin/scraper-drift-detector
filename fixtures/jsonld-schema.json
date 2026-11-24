@@ -1,0 +1,8 @@
+{
+  "name": "Product JSON-LD",
+  "jsonLd": true,
+  "json": {
+    "requiredKeys": ["@context", "name", "offers.price"],
+    "minItems": { "path": "review", "minCount": 1 }
+  }
+}

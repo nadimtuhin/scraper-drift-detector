@@ -43,6 +43,41 @@ function getByPath(obj: unknown, path: string): unknown {
 }
 
 /**
+ * Runs a Cheerio selector, turning selector syntax errors into a message
+ * instead of an exception so one bad schema entry cannot crash the run.
+ */
+function safeSelect<T>(run: () => T): { value: T; error?: undefined } | { value?: undefined; error: string } {
+  try {
+    return { value: run() };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Expands parsed JSON-LD into the candidate objects it describes: top-level
+ * arrays and `@graph` arrays are flattened so each node can be checked.
+ */
+function collectJsonLdNodes(
+  data: unknown,
+  out: Record<string, unknown>[] = [],
+  inheritedContext?: unknown
+): Record<string, unknown>[] {
+  if (Array.isArray(data)) {
+    for (const entry of data) collectJsonLdNodes(entry, out, inheritedContext);
+  } else if (data && typeof data === "object") {
+    let obj = data as Record<string, unknown>;
+    // Nodes inside @graph inherit the enclosing document's @context.
+    if (obj["@context"] === undefined && inheritedContext !== undefined) {
+      obj = { "@context": inheritedContext, ...obj };
+    }
+    out.push(obj);
+    if (Array.isArray(obj["@graph"])) collectJsonLdNodes(obj["@graph"], out, obj["@context"]);
+  }
+  return out;
+}
+
+/**
  * Validates a JSON object against JsonRule.
  */
 export function detectJsonDrift(
@@ -141,7 +176,39 @@ export async function detectDrift(
     for (const [fieldName, rawRule] of Object.entries(schema.selectors)) {
       totalChecks += 1;
       const rule = normalizeRule(rawRule);
-      const $el = $(rule.selector);
+      const selected = safeSelect(() => $(rule.selector));
+      let patternRegex: RegExp | undefined;
+      let configError: string | undefined;
+      if (selected.error !== undefined) {
+        configError = `Invalid selector '${rule.selector}': ${selected.error}`;
+      } else if (rule.pattern) {
+        try {
+          patternRegex = new RegExp(rule.pattern);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          configError = `Invalid pattern /${rule.pattern}/: ${msg}`;
+        }
+      }
+      if (configError) {
+        failedChecks += 1;
+        hasCriticalFailure = true;
+        errors.push(`[CRITICAL] ${fieldName}: ${configError}`);
+        fields[fieldName] = {
+          field: fieldName,
+          selector: rule.selector,
+          found: false,
+          count: 0,
+          expectedMinCount: rule.minCount ?? 0,
+          sampleValue: null,
+          empty: true,
+          required: Boolean(rule.required),
+          passed: false,
+          criticalFailure: true,
+          reason: configError,
+        };
+        continue;
+      }
+      const $el = selected.value!;
       const count = $el.length;
       const found = count > 0;
       const required = Boolean(rule.required);
@@ -182,9 +249,8 @@ export async function detectDrift(
         } else if (rule.maxCount !== undefined && count > rule.maxCount) {
           passed = false;
           reason = `Expected max ${rule.maxCount} occurrences of '${rule.selector}', found ${count}`;
-        } else if (rule.pattern) {
-          const reg = new RegExp(rule.pattern);
-          const matched = sampleValue !== null && reg.test(sampleValue);
+        } else if (patternRegex) {
+          const matched = sampleValue !== null && patternRegex.test(sampleValue);
           if (!matched) {
             passed = false;
             if (required) critical = true;
@@ -214,8 +280,8 @@ export async function detectDrift(
         sampleValue,
         empty: isEmpty,
         required,
-        patternMatched: rule.pattern
-          ? sampleValue !== null && new RegExp(rule.pattern).test(sampleValue)
+        patternMatched: patternRegex
+          ? sampleValue !== null && patternRegex.test(sampleValue)
           : undefined,
         passed,
         criticalFailure: critical,
@@ -230,9 +296,10 @@ export async function detectDrift(
     totalChecks += 1; // item container count check
     const container = schema.items.container;
     const minCount = schema.items.minCount ?? 1;
-    const $items = $(container);
+    const selectedItems = safeSelect(() => $(container));
+    const $items = selectedItems.value ?? $([]);
     const count = $items.length;
-    const itemContainerPassed = count >= minCount;
+    const itemContainerPassed = selectedItems.error === undefined && count >= minCount;
     let containerCritical = false;
     let containerReason: string | undefined;
 
@@ -240,7 +307,10 @@ export async function detectDrift(
       containerCritical = true; // Listing dropped below minimum items
       hasCriticalFailure = true;
       failedChecks += 1;
-      containerReason = `Found ${count} items for container '${container}', expected at least ${minCount}`;
+      containerReason =
+        selectedItems.error !== undefined
+          ? `Invalid selector '${container}': ${selectedItems.error}`
+          : `Found ${count} items for container '${container}', expected at least ${minCount}`;
       errors.push(`[CRITICAL] Items list: ${containerReason}`);
     } else {
       passedChecks += 1;
@@ -254,25 +324,34 @@ export async function detectDrift(
         const subRequired = Boolean(subRule.required);
         let presentCount = 0;
 
-        $items.each((_, el) => {
-          const $target = $(el).find(subRule.selector);
-          if ($target.length > 0) {
-            const val = subRule.attribute
-              ? $target.first().attr(subRule.attribute)
-              : $target.first().text().trim();
-            if (val && val.length > 0) {
-              presentCount += 1;
+        const scan = safeSelect(() =>
+          $items.each((_, el) => {
+            const $target = $(el).find(subRule.selector);
+            if ($target.length > 0) {
+              const val = subRule.attribute
+                ? $target.first().attr(subRule.attribute)
+                : $target.first().text().trim();
+              if (val && val.length > 0) {
+                presentCount += 1;
+              }
             }
-          }
-        });
+          })
+        );
 
         const passRate = (presentCount / count) * 100;
         // If required, must be present in all items (or minCount if 1)
-        const subPassed = subRequired ? presentCount === count : presentCount > 0;
+        const subPassed =
+          scan.error === undefined && (subRequired ? presentCount === count : presentCount > 0);
         let subCritical = false;
         let subReason: string | undefined;
 
-        if (!subPassed) {
+        if (scan.error !== undefined) {
+          failedChecks += 1;
+          subCritical = true;
+          hasCriticalFailure = true;
+          subReason = `Invalid selector '${subRule.selector}': ${scan.error}`;
+          errors.push(`[CRITICAL] ${subField}: ${subReason}`);
+        } else if (!subPassed) {
           failedChecks += 1;
           if (subRequired) {
             subCritical = true;
@@ -291,7 +370,7 @@ export async function detectDrift(
           presentCount,
           totalItems: count,
           passRatePercent: Number(passRate.toFixed(2)),
-          required: subRequired,
+          required: subRequired || scan.error !== undefined,
           passed: subPassed,
           reason: subReason,
         };
@@ -313,9 +392,8 @@ export async function detectDrift(
   let jsonResult: JsonDriftResult | undefined;
   if (schema.jsonLd) {
     totalChecks += 1;
-    let jsonLdData: unknown = null;
-    const scriptEl = $('script[type="application/ld+json"]');
-    if (scriptEl.length === 0) {
+    const scriptEls = $('script[type="application/ld+json"]');
+    if (scriptEls.length === 0) {
       failedChecks += 1;
       hasCriticalFailure = true;
       errors.push("[CRITICAL] Expected <script type='application/ld+json'> not found in DOM");
@@ -327,25 +405,44 @@ export async function detectDrift(
         reason: "No application/ld+json script tag found in HTML",
       };
     } else {
-      try {
-        jsonLdData = JSON.parse(scriptEl.first().text().trim());
-      } catch (err) {
+      // Pages commonly carry several JSON-LD blocks (BreadcrumbList, Organization,
+      // Product, ...) or a single block with an @graph array. Check every node.
+      const nodes: Record<string, unknown>[] = [];
+      const parseErrors: string[] = [];
+      scriptEls.each((_, el) => {
+        try {
+          collectJsonLdNodes(JSON.parse($(el).text().trim()), nodes);
+        } catch (err) {
+          parseErrors.push(err instanceof Error ? err.message : String(err));
+        }
+      });
+
+      if (nodes.length === 0) {
         failedChecks += 1;
         hasCriticalFailure = true;
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`[CRITICAL] Malformed JSON-LD script content: ${msg}`);
+        const msg =
+          parseErrors.length > 0
+            ? `Failed to parse JSON-LD: ${parseErrors.join("; ")}`
+            : "JSON-LD script content is not a JSON object";
+        errors.push(`[CRITICAL] ${msg}`);
         jsonResult = {
           passed: false,
           criticalFailure: true,
-          missingKeys: [],
+          missingKeys: schema.json?.requiredKeys || [],
           arrayLengthChecks: [],
-          reason: `Failed to parse JSON-LD: ${msg}`,
+          reason: msg,
         };
-      }
-
-      if (jsonLdData) {
+      } else {
+        for (const msg of parseErrors) {
+          warnings.push(`[DRIFT] Ignored malformed JSON-LD block: ${msg}`);
+        }
         if (schema.json) {
-          jsonResult = detectJsonDrift(jsonLdData, schema);
+          const results = nodes.map((node) => detectJsonDrift(node, schema));
+          const failureScore = (r: JsonDriftResult) =>
+            r.missingKeys.length + r.arrayLengthChecks.filter((c) => !c.passed).length;
+          jsonResult =
+            results.find((r) => r.passed) ??
+            results.reduce((best, r) => (failureScore(r) < failureScore(best) ? r : best));
           if (jsonResult.passed) {
             passedChecks += 1;
           } else {

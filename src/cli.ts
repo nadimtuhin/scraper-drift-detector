@@ -14,6 +14,37 @@ export type Envelope<T> =
   | { ok: true; data: T; error: null }
   | { ok: false; data: T | null; error: string };
 
+export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Fetches a URL as text, aborting if the whole request (headers and body)
+ * takes longer than `timeoutMs`, so an unresponsive target cannot hang a
+ * scheduled pipeline forever.
+ */
+export async function fetchHtml(
+  url: string,
+  { timeoutMs = DEFAULT_FETCH_TIMEOUT_MS }: { timeoutMs?: number } = {}
+): Promise<string> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (ScraperDriftDetector/0.1.0; +https://github.com/nadimtuhin/scraper-drift-detector)",
+      },
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+    }
+    return await resp.text();
+  } catch (err) {
+    if (signal.aborted) {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
+}
+
 interface ParsedCliArgs {
   schemaPath?: string;
   htmlPath?: string;
@@ -346,15 +377,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       htmlContent = await htmlFile.text();
     } else if (args.url) {
       try {
-        const resp = await fetch(args.url, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (ScraperDriftDetector/0.1.0; +https://github.com/nadimtuhin/scraper-drift-detector)",
-          },
-        });
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
-        }
-        htmlContent = await resp.text();
+        htmlContent = await fetchHtml(args.url);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`Failed to fetch URL '${args.url}': ${msg}`);
