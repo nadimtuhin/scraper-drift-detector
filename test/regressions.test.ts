@@ -34,6 +34,20 @@ describe("JSON-LD with multiple blocks", () => {
     expect(report.json?.missingKeys).toContain("offers.price");
   });
 
+  test("a malformed JSON-LD block next to a valid one is a warning, not drift", async () => {
+    const schema: DriftSchema = await Bun.file(`${FIXTURES_DIR}/jsonld-schema.json`).json();
+    const valid = (await fixture("product-jsonld-multi.html")).match(
+      /<script type="application\/ld\+json">[\s\S]*?<\/script>/g,
+    )!;
+    const html = `<html><head>${valid.join("")}<script type="application/ld+json">{ "@type": "Product", </script></head></html>`;
+    const report = await detectDrift(html, schema, noSnap);
+    expect(report.driftPercent).toBe(0);
+    expect(report.failedChecks).toBe(0);
+    expect(report.errors).toEqual([]);
+    expect(report.warnings.filter((w) => /malformed JSON-LD/.test(w))).toHaveLength(1);
+    expect(report.passed).toBe(true);
+  });
+
   test("a JSON-LD block that parses to null counts as a failed check, not a skipped one", async () => {
     const html = `<script type="application/ld+json">null</script>`;
     const report = await detectDrift(html, { jsonLd: true }, noSnap);
