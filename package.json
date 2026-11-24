@@ -12,6 +12,7 @@
   },
   "scripts": {
     "test": "bun test",
+    "typecheck": "tsc --noEmit",
     "start": "bun run src/cli.ts"
   },
   "keywords": [
